@@ -1,0 +1,308 @@
+# 기준: CIS Kubernetes Benchmark 5.3.2 "Ensure that all Namespaces have NetworkPolicies
+# defined" + NSA/CISA Kubernetes Hardening Guidance v1.2 "Network Separation and
+# Hardening" 섹션 - 두 가이드 모두 "먼저 전체 거부(default-deny)로 시작하고, 꼭
+# 필요한 경로만 명시적으로 허용하라"는 동일한 원칙을 요구한다.
+#
+# 각 네임스페이스마다 (1) ingress/egress 전체 차단 정책을 먼저 깔고
+# (2) 실제로 필요한 통신만 개별 정책으로 허용하는 2단계 구조.
+
+# ===================== keycloak =====================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: keycloak
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-from-istio-gateway
+  namespace: keycloak
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress"]
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels: {kubernetes.io/metadata.name: istio-system}
+    ports:
+    - {protocol: TCP, port: 8080}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-dns-and-istiod
+  namespace: keycloak
+spec:
+  podSelector: {}
+  policyTypes: ["Egress"]
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels: {kubernetes.io/metadata.name: kube-system}
+    ports:
+    - {protocol: UDP, port: 53}
+    - {protocol: TCP, port: 53}
+  - to:
+    - namespaceSelector:
+        matchLabels: {kubernetes.io/metadata.name: istio-system}
+    ports:
+    - {protocol: TCP, port: 15012}
+  # keycloak 파드에 같이 떠있는 wazuh-agent 사이드카가 로그를 보내는 경로
+  # (1514=데이터 전송, 1515=최초 등록/authd). wazuh 네임스페이스는 메시 밖이라
+  # Istio가 자동으로 plaintext로 보낸다(대상에 사이드카가 없으므로 auto-mTLS가
+  # mTLS를 강제하지 않음).
+  - to:
+    - namespaceSelector:
+        matchLabels: {kubernetes.io/metadata.name: wazuh}
+    ports:
+    - {protocol: TCP, port: 1514}
+    - {protocol: TCP, port: 1515}
+  # Authenticator SPI가 로그인 시점에 OPA의 일반 REST API를 직접 호출하는 경로.
+  - to:
+    - namespaceSelector:
+        matchLabels: {kubernetes.io/metadata.name: opa}
+    ports:
+    - {protocol: TCP, port: 8181}
+
+# ===================== opa =====================
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: opa
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-from-default-ns-workloads
+  namespace: opa
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress"]
+  ingress:
+  # OPA는 게이트웨이가 아니라 default 네임스페이스 워크로드(backend, employee-page,
+  # hr-page 등 - AuthorizationPolicy가 selector 없이 네임스페이스 전체에 걸려있다)의
+  # Envoy 사이드카가 ext_authz gRPC 체크를 보낼 때만 호출된다. app 라벨로 좁히면
+  # 새 서비스를 추가할 때마다 또 고쳐야 해서 네임스페이스 단위로 허용.
+  - from:
+    - namespaceSelector:
+        matchLabels: {kubernetes.io/metadata.name: default}
+    ports:
+    - {protocol: TCP, port: 9191}
+  # Keycloak Authenticator SPI가 로그인 시점에 OPA의 일반 REST API(8181,
+  # keycloak.login.allow)를 직접 호출하는 경로 - ext_authz gRPC와는 별개.
+  - from:
+    - namespaceSelector:
+        matchLabels: {kubernetes.io/metadata.name: keycloak}
+    ports:
+    - {protocol: TCP, port: 8181}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-dns-and-istiod
+  namespace: opa
+spec:
+  podSelector: {}
+  policyTypes: ["Egress"]
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels: {kubernetes.io/metadata.name: kube-system}
+    ports:
+    - {protocol: UDP, port: 53}
+    - {protocol: TCP, port: 53}
+  - to:
+    - namespaceSelector:
+        matchLabels: {kubernetes.io/metadata.name: istio-system}
+    ports:
+    - {protocol: TCP, port: 15012}
+  # OPA가 매 요청마다 http.send로 실시간 기기 포스처를 조회하는 경로.
+  - to:
+    - namespaceSelector:
+        matchLabels: {kubernetes.io/metadata.name: device-posture}
+    ports:
+    - {protocol: TCP, port: 8090}
+
+# ===================== device-posture =====================
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: device-posture
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-from-opa-only
+  namespace: device-posture
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress"]
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels: {kubernetes.io/metadata.name: opa}
+    ports:
+    - {protocol: TCP, port: 8090}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-dns-and-istiod
+  namespace: device-posture
+spec:
+  podSelector: {}
+  policyTypes: ["Egress"]
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels: {kubernetes.io/metadata.name: kube-system}
+    ports:
+    - {protocol: UDP, port: 53}
+    - {protocol: TCP, port: 53}
+  - to:
+    - namespaceSelector:
+        matchLabels: {kubernetes.io/metadata.name: istio-system}
+    ports:
+    - {protocol: TCP, port: 15012}
+
+# ===================== oauth2-proxy =====================
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: oauth2-proxy
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-from-istio-gateway
+  namespace: oauth2-proxy
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress"]
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels: {kubernetes.io/metadata.name: istio-system}
+    ports:
+    - {protocol: TCP, port: 4180}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-dns-istiod-and-gateway
+  namespace: oauth2-proxy
+spec:
+  podSelector: {}
+  policyTypes: ["Egress"]
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels: {kubernetes.io/metadata.name: kube-system}
+    ports:
+    - {protocol: UDP, port: 53}
+    - {protocol: TCP, port: 53}
+  - to:
+    - namespaceSelector:
+        matchLabels: {kubernetes.io/metadata.name: istio-system}
+    ports:
+    - {protocol: TCP, port: 15012}
+  # oauth2-proxy가 OIDC discovery/token exchange를 할 때도 Keycloak에 직접
+  # 붙지 않고 ztna.local:30080(=게이트웨이)을 거치도록 되어 있으므로 egress 대상도
+  # keycloak이 아니라 istio-ingressgateway다.
+  # 주의: NetworkPolicy의 port는 Service port(30080)가 아니라 DNAT 이후 실제
+  # 패킷이 도달하는 파드의 targetPort(8080)를 기준으로 매칭된다.
+  - to:
+    - namespaceSelector:
+        matchLabels: {kubernetes.io/metadata.name: istio-system}
+      podSelector:
+        matchLabels: {istio: ingressgateway}
+    ports:
+    - {protocol: TCP, port: 8080}
+
+# ===================== default (backend / 향후 hr·employee 파드) =====================
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: default
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-from-istio-gateway
+  namespace: default
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress"]
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels: {kubernetes.io/metadata.name: istio-system}
+    ports:
+    - {protocol: TCP, port: 8080}
+    # employee-page/hr-page(nginx)의 실제 targetPort - Service port(8080)가
+    # 아니라 파드가 실제로 듣는 80으로 매칭해야 한다(이미 한 번 겪은 실수).
+    - {protocol: TCP, port: 80}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-dns-istiod-opa-and-gateway
+  namespace: default
+spec:
+  podSelector: {}
+  policyTypes: ["Egress"]
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels: {kubernetes.io/metadata.name: kube-system}
+    ports:
+    - {protocol: UDP, port: 53}
+    - {protocol: TCP, port: 53}
+  - to:
+    - namespaceSelector:
+        matchLabels: {kubernetes.io/metadata.name: istio-system}
+    ports:
+    - {protocol: TCP, port: 15012}
+  # backend 파드의 Envoy 사이드카가 OPA에 ext_authz gRPC 체크를 보내는 경로.
+  - to:
+    - namespaceSelector:
+        matchLabels: {kubernetes.io/metadata.name: opa}
+      podSelector:
+        matchLabels: {app: opa-envoy}
+    ports:
+    - {protocol: TCP, port: 9191}
+  # curltest류 디버그 파드가 브라우저 역할로 ztna.local:30080(게이트웨이)에 직접
+  # curl 하는 테스트 경로를 계속 쓸 수 있게 허용.
+  # 주의: NetworkPolicy의 port는 Service port(30080)가 아니라 DNAT 이후 실제
+  # 패킷이 도달하는 파드의 targetPort(8080)를 기준으로 매칭된다.
+  - to:
+    - namespaceSelector:
+        matchLabels: {kubernetes.io/metadata.name: istio-system}
+      podSelector:
+        matchLabels: {istio: ingressgateway}
+    ports:
+    - {protocol: TCP, port: 8080}

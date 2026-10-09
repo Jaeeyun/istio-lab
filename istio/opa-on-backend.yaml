@@ -1,0 +1,15 @@
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: step2-opa-device-check
+  namespace: default
+spec:
+  # selector를 비워서 default 네임스페이스의 모든 워크로드(backend, employee-page,
+  # hr-page, 향후 추가되는 앱 전부)에 똑같이 적용 - 특정 app 라벨만 걸면 새
+  # 서비스를 추가할 때마다 정책을 또 추가해야 하는데, Zero Trust 원칙상 "이
+  # 네임스페이스로 들어오는 모든 요청은 예외 없이 OPA를 거친다"가 맞다.
+  action: CUSTOM
+  provider:
+    name: opa-envoy
+  rules:
+  - {}

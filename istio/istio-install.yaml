@@ -1,0 +1,42 @@
+apiVersion: install.istio.io/v1alpha1
+kind: IstioOperator
+spec:
+  profile: default
+  meshConfig:
+    accessLogFile: /dev/stdout
+    extensionProviders:
+    - name: "oauth2-proxy"
+      envoyExtAuthzHttp:
+        service: "oauth2-proxy.oauth2-proxy.svc.cluster.local"
+        port: 4180
+        includeRequestHeadersInCheck: ["cookie", "authorization", "x-forwarded-proto", "x-forwarded-host", "x-forwarded-uri"]
+        headersToUpstreamOnAllow: ["authorization", "x-auth-request-user", "x-auth-request-email", "x-auth-request-access-token", "x-auth-request-preferred-username"]
+        headersToDownstreamOnDeny: ["set-cookie", "location", "content-type", "content-length"]
+        includeAdditionalHeadersInCheck:
+          x-forwarded-method: "%REQ(:METHOD)%"
+    - name: "opa-envoy"
+      envoyExtAuthzGrpc:
+        service: "opa-envoy.opa.svc.cluster.local"
+        port: 9191
+  components:
+    pilot:
+      k8s:
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+    ingressGateways:
+    - name: istio-ingressgateway
+      enabled: true
+      k8s:
+        service:
+          type: NodePort
+          ports:
+          - name: http2
+            port: 80
+            targetPort: 8080
+            nodePort: 30080
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi

@@ -1,0 +1,123 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: opa-policy
+  namespace: opa
+data:
+  policy.rego: |
+    package envoy.authz
+
+    import future.keywords.if
+    import future.keywords.in
+
+    default allow := false
+
+    # oauth2-proxy가 1단계에서 이미 토큰을 검증했고, Istio AuthorizationPolicy
+    # 체인이 그 응답 헤더(x-auth-request-access-token)를 그대로 다음 ext_authz
+    # 단계(여기)로 넘겨준다는 전제 (서명 재검증은 안 함 - 1단계에서 이미 검증됨).
+    allow if {
+    	device_currently_trusted
+    	host_allowed
+    }
+
+    access_token := t if {
+    	t := input.attributes.request.http.headers["x-auth-request-access-token"]
+    }
+
+    claims := payload if {
+    	io.jwt.decode(access_token, [_, payload, _])
+    }
+
+    # 토큰에 박힌 device_trusted 클레임(로그인/refresh 시점 스냅샷)을 믿지 않고,
+    # 매 요청마다 실제 디바이스 포스처 서비스를 http.send로 직접 호출해서
+    # "지금 이 순간"의 신뢰 상태를 받아온다 - OIDC 토큰 수명/refresh 주기와
+    # 완전히 무관하게 매 요청 단위로 재검증된다.
+    device_currently_trusted if {
+    	resp := http.send({
+    		"method": "GET",
+    		"url": sprintf("http://device-posture.device-posture.svc.cluster.local:8090/posture?user=%s", [claims.preferred_username]),
+    		"force_cache": false,
+    		"timeout": "2s",
+    	})
+    	resp.status_code == 200
+    	resp.body.trusted == true
+    }
+
+    # "HR 데이터(hr.company.com)는 Keycloak의 hr-group 멤버만" - 실제 도메인
+    # 분리 기준. :authority 헤더(HTTP/2 Host)로 어느 도메인으로 들어왔는지 본다.
+    authority := input.attributes.request.http.headers[":authority"]
+
+    host_allowed if {
+    	not startswith(authority, "hr.company.com")
+    }
+
+    host_allowed if {
+    	startswith(authority, "hr.company.com")
+    	"hr-group" in claims.groups
+    }
+  login-policy.rego: |
+    package keycloak.login
+
+    import future.keywords.if
+
+    # Keycloak Authenticator SPI가 로그인 시점에 묻는 전용 패키지 - envoy.authz와는
+    # 완전히 별개. ext_authz(gRPC)가 아니라 OPA의 일반 REST API(/v1/data/...)로
+    # 호출되고, 입력도 Envoy CheckRequest가 아니라 SPI가 직접 만든 {"username":...}다.
+    default allow := false
+
+    allow if {
+    	resp := http.send({
+    		"method": "GET",
+    		"url": sprintf("http://device-posture.device-posture.svc.cluster.local:8090/posture?user=%s", [input.username]),
+    		"force_cache": false,
+    		"timeout": "2s",
+    	})
+    	resp.status_code == 200
+    	resp.body.trusted == true
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opa-envoy
+  namespace: opa
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: opa-envoy}
+  template:
+    metadata:
+      labels: {app: opa-envoy}
+    spec:
+      containers:
+      - name: opa
+        image: openpolicyagent/opa:0.70.0-envoy
+        args:
+        - "run"
+        - "--server"
+        - "--addr=0.0.0.0:8181"
+        - "--diagnostic-addr=0.0.0.0:8282"
+        - "--set=plugins.envoy_ext_authz_grpc.addr=0.0.0.0:9191"
+        - "--set=plugins.envoy_ext_authz_grpc.query=data.envoy.authz.allow"
+        - "--set=decision_logs.console=true"
+        - "/policies/policy.rego"
+        - "/policies/login-policy.rego"
+        ports:
+        - {containerPort: 9191, name: grpc}
+        - {containerPort: 8181, name: http}
+        volumeMounts:
+        - {name: policy, mountPath: /policies}
+      volumes:
+      - name: policy
+        configMap: {name: opa-policy}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: opa-envoy
+  namespace: opa
+spec:
+  selector: {app: opa-envoy}
+  ports:
+  - {name: grpc, port: 9191, targetPort: 9191}
+  - {name: http, port: 8181, targetPort: 8181}

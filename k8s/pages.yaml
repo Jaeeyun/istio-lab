@@ -1,0 +1,86 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: employee-page
+  namespace: default
+data:
+  index.html: |
+    <!doctype html><html><body style="font-family:sans-serif;background:#eef6ff;padding:40px">
+    <h1>Employee Self-Service Portal</h1>
+    <p>employee.company.com 로 들어온 일반 사내 직원용 페이지.</p>
+    <p>인증된 사용자: <b id="email">...</b></p>
+    <script>document.getElementById('email').textContent =
+      document.cookie.includes('_oauth2_proxy') ? '(세션 쿠키 확인됨)' : '(세션 없음)';</script>
+    </body></html>
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: employee-page
+  namespace: default
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: employee-page}}
+  template:
+    metadata:
+      labels: {app: employee-page}
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        ports: [{containerPort: 80}]
+        volumeMounts: [{name: html, mountPath: /usr/share/nginx/html}]
+      volumes:
+      - name: html
+        configMap: {name: employee-page}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: employee-page
+  namespace: default
+spec:
+  selector: {app: employee-page}
+  ports: [{port: 8080, targetPort: 80}]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hr-page
+  namespace: default
+data:
+  index.html: |
+    <!doctype html><html><body style="font-family:sans-serif;background:#fff0ec;padding:40px">
+    <h1>HR 인사 관리 포털</h1>
+    <p>hr.company.com 로 들어온 HR 임직원 전용 페이지. hr-group 멤버만 여기까지 도달할 수 있다.</p>
+    </body></html>
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hr-page
+  namespace: default
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: hr-page}}
+  template:
+    metadata:
+      labels: {app: hr-page}
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        ports: [{containerPort: 80}]
+        volumeMounts: [{name: html, mountPath: /usr/share/nginx/html}]
+      volumes:
+      - name: html
+        configMap: {name: hr-page}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hr-page
+  namespace: default
+spec:
+  selector: {app: hr-page}
+  ports: [{port: 8080, targetPort: 80}]

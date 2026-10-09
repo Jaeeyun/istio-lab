@@ -1,0 +1,72 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak
+  namespace: keycloak
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: keycloak}
+  template:
+    metadata:
+      labels: {app: keycloak}
+    spec:
+      containers:
+      - name: keycloak
+        image: quay.io/keycloak/keycloak:26.7.0
+        args: ["start-dev"]
+        env:
+        - name: KEYCLOAK_ADMIN
+          value: admin
+        - name: KEYCLOAK_ADMIN_PASSWORD
+          value: admin12345
+        - name: KC_HTTP_ENABLED
+          value: "true"
+        - name: KC_HOSTNAME
+          value: "http://ztna.local:30080"
+        - name: KC_HOSTNAME_STRICT
+          value: "true"
+        - name: KC_PROXY_HEADERS
+          value: "xforwarded"
+        - name: KC_LOG
+          value: "console,file"
+        - name: KC_LOG_FILE_OUTPUT
+          value: "json"
+        ports:
+        - containerPort: 8080
+        readinessProbe:
+          httpGet: {path: /realms/master, port: 8080}
+          initialDelaySeconds: 15
+          periodSeconds: 5
+        volumeMounts:
+        - {name: kc-log, mountPath: /opt/keycloak/data/log}
+        - {name: spi-jar, mountPath: /opt/keycloak/providers/opa-device-authenticator.jar, subPath: opa-device-authenticator.jar}
+      - name: wazuh-agent
+        image: wazuh/wazuh-agent:4.13.1
+        env:
+        - {name: WAZUH_MANAGER_SERVER, value: "wazuh-workers.wazuh.svc.cluster.local"}
+        - {name: WAZUH_MANAGER_PORT, value: "1514"}
+        - {name: WAZUH_REGISTRATION_SERVER, value: "wazuh.wazuh.svc.cluster.local"}
+        - {name: WAZUH_REGISTRATION_PORT, value: "1515"}
+        - {name: WAZUH_REGISTRATION_PASSWORD, value: "password"}
+        - {name: WAZUH_AGENT_NAME, value: "keycloak"}
+        securityContext:
+          runAsUser: 0
+        volumeMounts:
+        - {name: kc-log, mountPath: /keycloak-logs, readOnly: true}
+      volumes:
+      - name: kc-log
+        emptyDir: {}
+      - name: spi-jar
+        configMap: {name: kc-spi-jar}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak
+  namespace: keycloak
+spec:
+  selector: {app: keycloak}
+  ports:
+  - port: 8080
+    targetPort: 8080

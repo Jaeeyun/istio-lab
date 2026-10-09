@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oauth2-proxy
+  namespace: oauth2-proxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: oauth2-proxy}
+  template:
+    metadata:
+      labels: {app: oauth2-proxy}
+    spec:
+      containers:
+      - name: oauth2-proxy
+        image: quay.io/oauth2-proxy/oauth2-proxy:v7.6.0
+        args:
+        - "--http-address=0.0.0.0:4180"
+        - "--provider=keycloak-oidc"
+        - "--oidc-issuer-url=http://ztna.local:30080/realms/ztna"
+        # --redirect-url을 고정하지 않음 - employee.company.com/hr.company.com
+        # 두 도메인을 동시에 서빙하려면 콜백 URL을 들어온 요청의 Host 헤더로부터
+        # 동적으로 만들어야 한다. 대신 Keycloak 클라이언트의 redirectUris에
+        # 가능한 모든 콜백 URL을 미리 등록해둬야 함.
+        - "--client-id=oauth2-proxy"
+        - "--client-secret=oauth2proxysecret123"
+        - "--cookie-secret=BJGm7ZuKRQnZGUFyki4rSzYveOvs4R7N6EHIkKnmpSs="
+        - "--cookie-secure=false"
+        - "--email-domain=*"
+        - "--skip-provider-button=true"
+        - "--pass-access-token=true"
+        - "--pass-authorization-header=true"
+        - "--set-xauthrequest=true"
+        - "--reverse-proxy=true"
+        - "--whitelist-domain=ztna.local:30080"
+        - "--whitelist-domain=employee.company.com:30080"
+        - "--whitelist-domain=hr.company.com:30080"
+        - "--upstream=static://200"
+        - "--insecure-oidc-skip-issuer-verification=true"
+        - "--ssl-insecure-skip-verify=true"
+        ports:
+        - containerPort: 4180
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: oauth2-proxy
+  namespace: oauth2-proxy
+spec:
+  selector: {app: oauth2-proxy}
+  ports:
+  - port: 4180
+    targetPort: 4180

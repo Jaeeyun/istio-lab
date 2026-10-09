@@ -1,0 +1,17 @@
+# OOM 방지 - 기본 512Mi로는 ossec 데몬+API+filebeat+clusterd가 같은 파드에서
+# 같이 돌 때 커널 OOM killer가 wazuh-apid/wazuh-modulesd를 반복적으로 죽인다
+# (dmesg에서 직접 확인). 지금 노드 메모리가 넉넉해져서 2Gi로 올림.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: wazuh-manager-master
+  namespace: wazuh
+spec:
+  template:
+    spec:
+      containers:
+        - name: wazuh-manager
+          resources:
+            limits:
+              cpu: "500m"
+              memory: 2Gi
